@@ -1,0 +1,100 @@
+from pathlib import Path
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from IPython.display import display, Markdown
+DATA_DIR = Path('/content')
+OUTPUT_DIR = Path('/content/banking_eda_outputs')
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+FILES = {
+    'accounts': ['open_date'], 'branches': ['opened_date'],
+    'cards': ['issue_date', 'expiry_date'], 'card_transactions': ['txn_date'],
+    'customers': ['date_of_birth', 'join_date'], 'employees': ['hire_date'],
+    'loans': ['start_date'], 'loan_payments': ['payment_date'],
+    'support_tickets': ['date_opened', 'date_resolved'], 'transactions': ['txn_date'],
+}
+dfs = {name: pd.read_csv(DATA_DIR / f'{name}.csv', parse_dates=dates, on_bad_lines='skip')
+       for name, dates in FILES.items()}
+accounts, branches, cards = dfs['accounts'], dfs['branches'], dfs['cards']
+card_txns, customers, employees = dfs['card_transactions'], dfs['customers'], dfs['employees']
+loans, payments, tickets, txns = dfs['loans'], dfs['loan_payments'], dfs['support_tickets'], dfs['transactions']
+profile = pd.DataFrame([{
+    'table': name, 'rows': len(df), 'columns': len(df.columns),
+    'missing_cells': int(df.isna().sum().sum()),
+    'duplicate_rows': int(df.duplicated().sum())
+} for name, df in dfs.items()]).sort_values('rows', ascending=False)
+display(profile)
+profile.to_csv(OUTPUT_DIR / 'data_profile.csv', index=False)
+coverage = pd.DataFrame([
+    ('accounts → customers', accounts.customer_id.isin(customers.customer_id).mean()),
+    ('accounts → branches', accounts.branch_id.isin(branches.branch_id).mean()),
+    ('cards → accounts', cards.account_id.isin(accounts.account_id).mean()),
+    ('loans → customers', loans.customer_id.isin(customers.customer_id).mean()),
+    ('payments → loans', payments.loan_id.isin(loans.loan_id).mean()),
+    ('tickets → customers', tickets.customer_id.isin(customers.customer_id).mean()),
+    ('transactions → accounts', txns.account_id.isin(accounts.account_id).mean()),
+    ('card transactions → cards', card_txns.card_id.isin(cards.card_id).mean()),
+], columns=['relationship', 'matched_share'])
+display(coverage.style.format({'matched_share': '{:.2%}'}))
+coverage.to_csv(OUTPUT_DIR / 'relationship_coverage.csv', index=False)
+sns.set_theme(style='whitegrid', palette='deep')
+kpis = pd.Series({
+    'Customers': len(customers), 'Accounts': len(accounts),
+    'Account balances (₹)': accounts.balance.sum(),
+    'Account transactions': len(txns), 'Transaction value (₹)': txns.amount.sum(),
+    'Loan book (₹)': loans.loan_amount.sum(), 'Card transactions': len(card_txns),
+    'Card fraud rate': card_txns.is_fraud.mean(), 'Support tickets': len(tickets),
+    'Average satisfaction (out of 5)': tickets.satisfaction_score.mean(),
+})
+display(kpis.to_frame('value'))
+txns['month'] = txns.txn_date.dt.to_period('M').astype(str)
+monthly = txns.groupby(['month', 'txn_type'], as_index=False).amount.sum()
+plt.figure(figsize=(13, 5))
+sns.lineplot(data=monthly, x='month', y='amount', hue='txn_type', marker='o')
+plt.xticks(rotation=45); plt.title('Monthly transaction value by type', loc='left', weight='bold')
+plt.ylabel('Value (₹)'); plt.xlabel(''); plt.tight_layout()
+plt.savefig(OUTPUT_DIR / '01_transaction_trends.png', dpi=180); plt.show()
+
+channel = txns.groupby('channel').agg(value=('amount', 'sum'), transactions=('amount', 'size'), average_ticket=('amount', 'mean')).sort_values('value', ascending=False)
+display(channel.style.format({'value': '₹{:,.0f}', 'average_ticket': '₹{:,.0f}', 'transactions': '{:,.0f}'}))
+channel.to_csv(OUTPUT_DIR / 'channel_summary.csv')
+plt.figure(figsize=(9, 5)); sns.barplot(data=channel.reset_index(), x='value', y='channel')
+plt.title('Transaction value by channel', loc='left', weight='bold'); plt.xlabel('Value (₹)'); plt.ylabel(''); plt.tight_layout()
+plt.savefig(OUTPUT_DIR / '02_channel_mix.png', dpi=180); plt.show()
+state = customers.groupby('state').agg(customers=('customer_id', 'size'), avg_income=('annual_income', 'mean'), avg_credit_score=('credit_score', 'mean'))
+state = state.join(accounts.merge(branches[['branch_id','state']], on='branch_id').groupby('state').balance.sum().rename('balances'))
+state = state.join(loans.merge(branches[['branch_id','state']], on='branch_id').groupby('state').loan_amount.sum().rename('loan_book')).fillna(0).sort_values('balances', ascending=False)
+display(state.head(10).style.format({'balances': '₹{:,.0f}', 'loan_book': '₹{:,.0f}', 'avg_income': '₹{:,.0f}', 'avg_credit_score': '{:.0f}'}))
+state.to_csv(OUTPUT_DIR / 'state_summary.csv')
+plt.figure(figsize=(10, 6)); sns.barplot(data=state.head(10).reset_index(), x='balances', y='state')
+plt.title('Top 10 states by account balance', loc='left', weight='bold'); plt.xlabel('Balances (₹)'); plt.ylabel(''); plt.tight_layout()
+plt.savefig(OUTPUT_DIR / '03_top_states_by_balance.png', dpi=180); plt.show()
+payments['amount_paid'] = pd.to_numeric(payments['amount_paid'], errors='coerce')
+payments['late_payment_flag'] = pd.to_numeric(payments['late_payment_flag'], errors='coerce')
+loan_perf = payments.groupby('loan_id').agg(payments=('payment_id','size'), paid=('amount_paid','sum'), late_rate=('late_payment_flag','mean'))
+loan_perf = loans.merge(loan_perf, on='loan_id', how='left').fillna({'payments':0, 'paid':0, 'late_rate':0})
+loan_type = loan_perf.groupby('loan_type').agg(loans=('loan_id','size'), originated=('loan_amount','sum'), avg_rate=('interest_rate','mean'), late_rate=('late_rate','mean')).sort_values('originated', ascending=False)
+display(loan_type.style.format({'originated':'₹{:,.0f}', 'avg_rate':'{:.2f}%', 'late_rate':'{:.2%}'}))
+loan_type.to_csv(OUTPUT_DIR / 'loan_type_summary.csv')
+plt.figure(figsize=(9, 5)); ax = sns.barplot(data=loan_type.reset_index(), x='late_rate', y='loan_type')
+ax.xaxis.set_major_formatter('{x:.0%}'); plt.title('Late-payment rate by loan type', loc='left', weight='bold'); plt.tight_layout()
+plt.savefig(OUTPUT_DIR / '04_loan_late_rates.png', dpi=180); plt.show()
+fraud = card_txns.groupby('merchant_category').agg(transactions=('card_txn_id','size'), fraud_rate=('is_fraud','mean')).sort_values('fraud_rate', ascending=False)
+display(fraud.style.format({'transactions':'{:,.0f}', 'fraud_rate':'{:.2%}'}))
+fraud.to_csv(OUTPUT_DIR / 'fraud_by_merchant.csv')
+plt.figure(figsize=(9, 5)); ax = sns.barplot(data=fraud.reset_index(), x='fraud_rate', y='merchant_category')
+ax.xaxis.set_major_formatter('{x:.2%}'); plt.title('Card fraud rate by merchant category', loc='left', weight='bold'); plt.tight_layout()
+plt.savefig(OUTPUT_DIR / '05_fraud_by_category.png', dpi=180); plt.show()
+resolved = tickets[tickets.status.eq('Resolved')].copy()
+resolved['resolution_days'] = (resolved.date_resolved - resolved.date_opened).dt.total_seconds() / 86400
+support = tickets.groupby('issue_type').agg(tickets=('ticket_id','size'), satisfaction=('satisfaction_score','mean')).join(resolved.groupby('issue_type').resolution_days.mean())
+display(support.style.format({'tickets':'{:,.0f}', 'satisfaction':'{:.2f}', 'resolution_days':'{:.2f}'}))
+support.to_csv(OUTPUT_DIR / 'support_summary.csv')
+plt.figure(figsize=(10, 6)); sns.scatterplot(data=support.reset_index(), x='resolution_days', y='satisfaction', size='tickets', sizes=(70, 450))
+for _, r in support.reset_index().iterrows(): plt.text(r.resolution_days+.03, r.satisfaction, r.issue_type, fontsize=8)
+plt.title('Support experience: resolution time vs satisfaction', loc='left', weight='bold'); plt.xlabel('Average resolution days'); plt.ylabel('Average satisfaction / 5'); plt.tight_layout()
+plt.savefig(OUTPUT_DIR / '06_support_experience.png', dpi=180); plt.show()
+import shutil
+from google.colab import files
+zip_file = shutil.make_archive('/content/banking_eda_outputs', 'zip', OUTPUT_DIR)
+files.download(zip_file)
