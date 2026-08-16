@@ -1,0 +1,11 @@
+table,rows,columns,missing_cells,duplicate_rows
+card_transactions,2932025,6,4,0
+transactions,2000000,7,0,0
+loan_payments,1158377,7,48,376003
+accounts,95000,7,0,0
+cards,65000,8,0,0
+customers,60000,12,0,0
+support_tickets,25000,7,0,0
+loans,22000,9,0,0
+employees,1800,6,0,0
+branches,150,6,0,0

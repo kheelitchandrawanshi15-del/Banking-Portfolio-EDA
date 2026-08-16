@@ -1,0 +1,9 @@
+relationship,matched_share
+accounts → customers,1.0
+accounts → branches,1.0
+cards → accounts,1.0
+loans → customers,1.0
+payments → loans,0.7736911212843487
+tickets → customers,1.0
+transactions → accounts,1.0
+card transactions → cards,1.0
